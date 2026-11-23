@@ -491,6 +491,35 @@ async function writeManifest(
   );
 }
 
+const AGY_SETTINGS_DIR = join(homedir(), ".gemini", "antigravity-acp");
+const AGY_SETTINGS_PATH = join(AGY_SETTINGS_DIR, "settings.json");
+
+/**
+ * Write a default settings.json (auth: oauth-personal) if the file does not
+ * already exist. This lets the ACP server surface an interactive login prompt
+ * on the first thread instead of failing with "Authentication required".
+ * Returns true when the file was newly created.
+ */
+export async function ensureDefaultSettings(): Promise<boolean> {
+  try {
+    await mkdir(AGY_SETTINGS_DIR, { recursive: true });
+    try {
+      await access(AGY_SETTINGS_PATH, fsConstants.F_OK);
+      return false; // already exists — leave it alone
+    } catch {
+      // File absent — write the default
+      await writeFile(
+        AGY_SETTINGS_PATH,
+        JSON.stringify({ auth: { type: "oauth-personal" } }, null, 2) + "\n",
+        "utf8",
+      );
+      return true;
+    }
+  } catch {
+    return false; // best-effort; never block probe or install
+  }
+}
+
 export async function runInstall(options: InstallOptions): Promise<InstallResult> {
   const notes: string[] = [];
   const target = detectTarget();
@@ -543,6 +572,12 @@ export async function runInstall(options: InstallOptions): Promise<InstallResult
       if (target.isWindows) await appendUserPathWindows(binDir, options.updatePath === true, notes);
       await writeManifest(installDir, entry.archive, binaryName, helper, wrapper, nodePath, entry.args ?? [], REGISTRY_COMMIT);
       notes.push("Binary already present; refreshed symlinks and context usage wrapper without re-downloading.");
+      if (await ensureDefaultSettings()) {
+        notes.push(
+          `Created ${AGY_SETTINGS_PATH} with auth: oauth-personal. ` +
+          `Sign in with your Google account when you start your first Antigravity thread.`,
+        );
+      }
       return {
         ok: true, platform: target.platform, arch: target.arch, distKey: target.distKey, url: entry.archive,
         args: entry.args ?? [], registryCommit: REGISTRY_COMMIT,
@@ -644,6 +679,14 @@ export async function runInstall(options: InstallOptions): Promise<InstallResult
   } catch (err) {
     notes.push(`Manifest write failed: ${(err as Error).message}`);
   }
+
+  if (await ensureDefaultSettings()) {
+    notes.push(
+      `Created ${AGY_SETTINGS_PATH} with auth: oauth-personal. ` +
+      `Sign in with your Google account when you start your first Antigravity thread.`,
+    );
+  }
+
   return {
     ok: true, platform: target.platform, arch: target.arch, distKey: target.distKey, url: sourceLabel,
     args: entry.args ?? [], registryCommit: REGISTRY_COMMIT,
@@ -653,6 +696,11 @@ export async function runInstall(options: InstallOptions): Promise<InstallResult
 }
 
 export async function probeLocal(): Promise<ProbeResult> {
+  // Ensure a default settings.json exists so the first thread triggers OAuth
+  // rather than failing with "Authentication required". Best-effort: never
+  // blocks the probe result.
+  await ensureDefaultSettings();
+
   const target = detectTarget();
   const binaryName = target.binaryName;
   const binaryPath = await findOnPath(binaryName);
